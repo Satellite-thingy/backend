@@ -1,0 +1,145 @@
+name: Backend CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spring-boot:
+    name: Validate Spring Boot services
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Detect Java build
+        id: java
+        shell: bash
+        run: |
+          if find . -type f \( -name pom.xml -o -name build.gradle -o -name build.gradle.kts \) -not -path './.git/*' -print -quit | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No Maven or Gradle project found. Spring Boot checks will activate when service projects are added."
+          fi
+
+      - name: Set up Java
+        if: steps.java.outputs.present == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and test Maven projects
+        if: steps.java.outputs.present == 'true'
+        shell: bash
+        run: |
+          while IFS= read -r -d '' file; do
+            dir="$(dirname "$file")"
+            echo "Checking Maven project: $dir"
+            if [[ -x "$dir/mvnw" ]]; then
+              (cd "$dir" && ./mvnw --batch-mode verify)
+            elif command -v mvn >/dev/null 2>&1; then
+              (cd "$dir" && mvn --batch-mode verify)
+            else
+              echo "::error::Maven project found but neither mvnw nor mvn is available."
+              exit 1
+            fi
+          done < <(find . -type f -name pom.xml -not -path './.git/*' -print0)
+
+      - name: Build and test Gradle projects
+        if: steps.java.outputs.present == 'true'
+        shell: bash
+        run: |
+          while IFS= read -r -d '' file; do
+            dir="$(dirname "$file")"
+            echo "Checking Gradle project: $dir"
+            if [[ -x "$dir/gradlew" ]]; then
+              (cd "$dir" && ./gradlew --no-daemon check)
+            elif command -v gradle >/dev/null 2>&1; then
+              (cd "$dir" && gradle --no-daemon check)
+            else
+              echo "::error::Gradle project found but neither gradlew nor gradle is available."
+              exit 1
+            fi
+          done < <(find . -type f \( -name build.gradle -o -name build.gradle.kts \) -not -path './.git/*' -print0)
+
+  fastapi-worker:
+    name: Validate FastAPI worker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Detect Python worker
+        id: python
+        shell: bash
+        run: |
+          if find . -type f \( -name pyproject.toml -o -name requirements.txt \) -not -path './.git/*' -print -quit | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No Python project manifest found. FastAPI worker checks will activate when the worker is added."
+          fi
+
+      - name: Install worker dependencies
+        if: steps.python.outputs.present == 'true'
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          while IFS= read -r -d '' file; do
+            if [[ "$(basename "$file")" == "requirements.txt" ]]; then
+              python -m pip install -r "$file"
+            fi
+          done < <(find . -type f -name requirements.txt -not -path './.git/*' -print0)
+          python -m pip install pytest
+
+      - name: Run Python tests
+        if: steps.python.outputs.present == 'true'
+        shell: bash
+        run: |
+          if find . -type f -path '*/test*.py' -not -path './.git/*' -print -quit | grep -q . || [[ -d tests ]]; then
+            python -m pytest
+          else
+            echo "No Python tests found; skipping."
+          fi
+
+  docker-validation:
+    name: Validate Docker images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build service Dockerfiles
+        shell: bash
+        run: |
+          mapfile -t dockerfiles < <(find . -type f -name Dockerfile -not -path './.git/*')
+          if [[ ${#dockerfiles[@]} -eq 0 ]]; then
+            echo "::warning::No Dockerfiles found. Container builds will activate when service Dockerfiles are added."
+            exit 0
+          fi
+          for file in "${dockerfiles[@]}"; do
+            context="$(dirname "$file")"
+            image="local/$(echo "$context" | tr '/[:upper:]' '--[:lower:]')"
+            docker build --file "$file" --tag "$image:${GITHUB_SHA}" "$context"
+          done
