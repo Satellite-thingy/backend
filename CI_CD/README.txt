@@ -1,0 +1,57 @@
+BACKEND CI/CD DOCUMENTATION
+============================
+
+Location
+--------
+The GitHub Actions workflow definitions are stored in:
+  .github/workflows/
+
+This documentation is stored in:
+  CI_CD/README.txt
+
+1. .github/workflows/ci.yml — Backend CI
+----------------------------------------
+Runs automatically for pull requests targeting main, pushes to main, and
+manual workflow dispatches.
+
+What it does:
+- Checks out the repository.
+- Finds Maven and Gradle projects and validates each Spring Boot project.
+- Uses Java 21 for the Spring Boot build jobs.
+- Runs Maven verify or Gradle check, including the tests configured by each
+  service project.
+- Detects Python project manifests for the FastAPI worker.
+- Installs requirements.txt dependencies when present, installs pytest, and
+  runs Python tests when test files exist.
+- Finds Dockerfiles and builds each image locally to validate its Docker build.
+- Does not push images to a registry or deploy services.
+
+The repository is currently a scaffold. Checks that require application
+manifests or Dockerfiles warn and skip when those files are not present.
+When the services are added, commit Maven/Gradle wrappers, Python dependency
+manifests, tests, and Dockerfiles. Keep each service's dependencies isolated.
+
+2. .github/workflows/release.yml — Backend container packaging
+--------------------------------------------------------------
+Runs when a version tag beginning with "v" is pushed, or when manually started.
+
+What it does:
+- Checks out the release source.
+- Finds Dockerfiles and builds each service image.
+- Exports built images as .tar archives.
+- Uploads the archives as a versioned GitHub Actions artifact.
+
+This is a packaging step only. It does not push images to Amazon ECR or another
+container registry and does not deploy to AWS.
+
+3. Deployment and infrastructure notes
+--------------------------------------
+The AWS compute target, container registry, region, networking, and deployment
+method have not yet been selected. PostgreSQL provisioning, database migration
+execution, S3 bucket configuration, and secrets management are also not
+configured by these workflows.
+
+After those decisions are made, add provider-specific deployment steps using
+GitHub Environments and repository/environment secrets. Configure database
+migrations as a separately reviewed deployment step. Use a non-production S3
+bucket for integration tests.
