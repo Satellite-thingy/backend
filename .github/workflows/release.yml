@@ -1,0 +1,48 @@
+name: Backend Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-containers:
+    name: Build and package backend containers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and export Docker images
+        shell: bash
+        run: |
+          mapfile -t dockerfiles < <(find . -type f -name Dockerfile -not -path './.git/*')
+          if [[ ${#dockerfiles[@]} -eq 0 ]]; then
+            echo "::warning::No Dockerfiles found. Backend release packaging will activate when container definitions are added."
+            exit 0
+          fi
+
+          mkdir -p release-images
+          for file in "${dockerfiles[@]}"; do
+            context="$(dirname "$file")"
+            service="$(basename "$context")"
+            image="satellite-thingy/$service:${GITHUB_REF_NAME}"
+            archive="release-images/$service.tar"
+            docker buildx build --load --file "$file" --tag "$image" "$context"
+            docker save "$image" --output "$archive"
+          done
+
+      - name: Upload container release artifacts
+        if: hashFiles('release-images/*.tar') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-containers-${{ github.ref_name }}
+          path: release-images/*.tar
+          if-no-files-found: ignore
+          retention-days: 30
